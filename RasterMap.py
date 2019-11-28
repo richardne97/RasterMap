@@ -1,8 +1,8 @@
-import requests
-import xml.etree.ElementTree
-import re
 import os
+import re
 from enum import Enum
+
+import requests
 
 
 class DescriptorTypes(Enum):
@@ -11,39 +11,63 @@ class DescriptorTypes(Enum):
     DDS = 'dds'
 
 
+class Range:
+    def __init__(self):
+        self.Start = 0
+        self.Step = 0
+        self.Stop = 0
+
+
+class HydrologicalDataType(Enum):
+    Flood = 'Flood'
+    Rainfall = 'Rainfall'
+
+
 class RasterMapApi:
 
-    def __init__(self, url="http://192.168.12.15/NCHC"):
+    def __init__(self, url="http://203.145.220.28/NchcRESTApi"):
         self.url = url
 
     def GetRegionList(self):
         """Get region list. 取得區域基本資料列表"""
-        regions = requests.get("{0}/RasterMap/Regions/List/All".format(self.url)).json()
+        regions = requests.get("{0}/RasterMap/Regions".format(self.url)).json()
         return regions
 
-    def GetEventList(self, region):
-        """Get event list for a region. 取得指定區域中，所有事件列表，事件試以NetCDF檔案格式儲存"""
-        response = requests.get("{0}/RasterMap/Events/List/{1}".format(self.url, region))
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return "Request fail"
-
-    def GetEventDescriptor(self, region, event, descriptorType):
+    def GetEventDescriptor(self, region, event, data_type, descriptor_type):
         """ Get descriptor (XML format) from event file (.nc). The return type is xml.etree.ElementTree
             取得事件檔案中的詮釋資料，包括DDX, DDS, DAS
         """
 
-        if not isinstance(descriptorType, DescriptorTypes):
+        if not isinstance(descriptor_type, DescriptorTypes):
             raise TypeError('descriptorType must be an instance of DescriptorTypes Enum')
         response = requests.get(
-            "{0}/RasterMap/Get/Region/{1}/Event/{2}/{3}".format(self.url, region, event, descriptorType.value))
+            "{0}/RasterMap/{1}/{2}/{3}/netcdf/{4}".format(self.url, region, event, data_type.value,
+                                                          descriptor_type.value))
         if response.status_code == 200:
-            return xml.etree.ElementTree.fromstring(response.content)
+            return response.text
         else:
             return "Request fail"
 
-    def GetEventNetCdfFile(self, region, event, outputFilePath=os.curdir):
+    def GetEventASCIIFile(self, region, event, data_type, outputFilePath=os.curdir):
+        """
+        Download ASCII converted NetCDF file of an event
+        :param data_type: hydrological type (flood or Rainfall)
+        :param region: region name
+        :param event: event name
+        :param outputFilePath: (optional) folder that save the downloaded file, if it is not assigned, it will be given as os.curdir
+        :return: file name with full file path
+        """
+        response = requests.get(
+            "{0}/RasterMap/{1}/{2}/{3}/ascii/file".format(self.url, region, event, data_type.value))
+        if response.status_code == 200:
+            fileName = re.findall('filename=(.+)', response.headers.get('content-disposition'))
+            fileNameFullPath = "{0}/{1}".format(outputFilePath, fileName[0])
+            open(fileNameFullPath, 'wb').write(response.content)
+            return fileNameFullPath
+        else:
+            return "Request fail"
+
+    def GetEventNetCDFFile(self, region, event, data_type, outputFilePath=os.curdir):
         """ Download NetCDF file of an event
             下載某個事件的NetCDF檔案，並且寫入指定路徑
             :param region: region name
@@ -51,7 +75,9 @@ class RasterMapApi:
             :param outputFilePath: (optional) folder that save the downloaded file, if it is not assigned, it will be given as os.curdir
             :return: file name with full file path
         """
-        response = requests.get("{0}/RasterMap/File/Download/Original/Region/{1}/Event/{2}/".format(self.url, region, event), allow_redirects=True)
+        response = requests.get(
+            "{0}/RasterMap/{1}/{2}/{3}/netcdf/file".format(self.url, region, event, data_type.value),
+            allow_redirects=True)
         if response.status_code == 200:
             fileName = re.findall('filename=(.+)', response.headers.get('content-disposition'))
             fileNameFullPath = "{0}/{1}".format(outputFilePath, fileName[0])
@@ -60,56 +86,50 @@ class RasterMapApi:
         else:
             return "Request fail"
 
-    def GetEventASCIIFile(self, region, event, outputFilePath=os.curdir):
-        """
-        Download ASCII converted NetCDF filef of an event
+    def GetGeoGrid(self, region, event, data_type, variable_name, time_range, x_range, y_rang):
+        """Get partial grid values from a netCDF file
         :param region: region name
-        :param event: event name
-        :param outputFilePath: (optional) folder that save the downloaded file, if it is not assigned, it will be given as os.curdir
-        :return: file name with full file path
-        """
-        response = requests.get("{0}/RasterMap/File/Download/ASCII/Region/{1}/Event/{2}/".format(self.url, region, event))
-        if response.status_code == 200:
-            fileName = re.findall('filename=(.+)', response.headers.get('content-disposition'))
-            fileNameFullPath = "{0}/{1}".format(outputFilePath, fileName[0])
-            open(fileNameFullPath, 'wb').write(response.content)
-            return fileNameFullPath
-        else:
-            return "Request fail"
-
-    def GetEventASCII(self, region, event, outputFilePath=os.curdir):
-        response = requests.get("{0}/RasterMap/NetCDF/DisplayText/Region/{1}/Event/{2}/".format(self.url, region, event))
-        if response.status_code == 200:
-            return response.contnet
-        else:
-            return "Request fail"
-
-    def GetEventASCIIWithPreprocessor(self, region, event, preprocessor):
+        :param event: event ID
+        :param data_type: Hydrological data type, value of the enum <RasterMap.HydrologicalDataType>
+        :param variable_name: variable name
+        :param time_range:time range object of type <RasterMap.Range>
+        :param x_range: X range object of type <RasterMap.Range>
+        :param y_rang: Y range object of type <RasterMap.Range>
+        :return: a partial grid of the event in ascii format.
+         """
         body = {
-                    "RegionId": region,
-                    "EventId": event,
-                    "Function": preprocessor
-                }
-        response = requests.post("{0}/RasterMap/NetCDF/Execute".format(self.url), data=body)
-        if response.status_code == 200:
-            return response.content
-        else:
-            return "Request fail"
-
-    def GetGeoGrid(self, region, event, variableName, unixTimeInMin, luCorX, luCorY, rdCorX, rdCorY):
-        """Get partial grid values from a netCDF file"""
-        body = {
-            "RegionId": region,
-            "EventId": event,
-            "VariableName": variableName,
-            "UnixTimeInMin": unixTimeInMin,
-            "LeftUpCornerX": luCorX,
-            "LeftUpCornerY": luCorY,
-            "RightDownCornerX": rdCorX,
-            "RightDownCornerY": rdCorY
+            "VariableName": variable_name,
+            "Time": {
+                "Start": time_range.Start,
+                "Step": time_range.Step,
+                "Stop": time_range.Stop
+            },
+            "X": {
+                "Start": x_range.Start,
+                "Step": x_range.Step,
+                "Stop": x_range.Stop
+            },
+            "Y": {
+                "Start": y_rang.Start,
+                "Step": y_rang.Step,
+                "Stop": y_rang.Stop
+            }
         }
-        response = requests.post("{0}/RasterMap/NetCDF/Get".format(self.url), data=body)
+        response = requests.post(
+            "{0}/RasterMap/{1}/{2}/{3}/ascii/partial".format(self.url, region, event, data_type.value), json=body)
         if response.status_code == 200:
-            return response.content
+            return response.text
         else:
-            return "Request fail"
+            return "Request fail {0}".format(response.text)
+
+    def RunFunction(self, region, event, data_type, function):
+        """runs a function on a netCDF file"""
+        body = {
+            "Function": function
+        }
+        response = requests.post(
+            "{0}/RasterMap/{1}/{2}/{3}/ascii/function".format(self.url, region, event, data_type.value), json=body)
+        if response.status_code == 200:
+            return response.text
+        else:
+            return "Request fail: {0}".format(response.text)
